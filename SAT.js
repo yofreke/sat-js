@@ -281,6 +281,7 @@
     this['pos'] = pos || new Vector();
     this['points'] = points || [];
     this['angle'] = 0;
+    this['scale'] = new Vector(1, 1);
     this['offset'] = new Vector();
     this.recalc();
   }
@@ -393,6 +394,7 @@
     var points = this['points'];
     var offset = this['offset'];
     var angle = this['angle'];
+    var scale = this['scale'];
     var len = points.length;
     for (i = 0; i < len; i++) {
       var calcPoint = points[i].clone();
@@ -402,6 +404,7 @@
       if (angle !== 0) {
         calcPoint.rotate(angle);
       }
+      calcPoint.scale(scale.x, scale.y);
     }
     // Calculate the edges/normals
     for (i = 0; i < len; i++) {
