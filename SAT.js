@@ -353,6 +353,18 @@
     return this;
   };
 
+  // Set the current scale of the polygon
+  /**
+   * @param {Vector} offset The new offset vector.
+   * @return {Polygon} This for chaining.
+   */
+  Polygon.prototype['setScale'] = Polygon.prototype.setScale = function(sx, sy) {
+    this['scale'].x = sx;
+    this['scale'].y = sy;
+    this._recalc();
+    return this;
+  };
+
   // Rotates this polygon counter-clockwise around the origin of *its local coordinate system* (i.e. `pos`).
   //
   // Note: This changes the **original** points (so any `angle` will be applied on top of this rotation).
