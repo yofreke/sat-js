@@ -1,10 +1,10 @@
-// Version 0.4 - Copyright 2014 -  Jim Riecken <jimr@jimr.ca>
+// Version 0.5.0 - Copyright 2012 - 2015 -  Jim Riecken <jimr@jimr.ca>
 //
 // Released under the MIT License - https://github.com/jriecken/sat-js
 //
 // A simple library for determining intersections of circles and
 // polygons using the Separating Axis Theorem.
-/** @preserve SAT.js - Version 0.4 - Copyright 2014 - Jim Riecken <jimr@jimr.ca> - released under the MIT License. https://github.com/jriecken/sat-js */
+/** @preserve SAT.js - Version 0.5.0 - Copyright 2012 - 2015 - Jim Riecken <jimr@jimr.ca> - released under the MIT License. https://github.com/jriecken/sat-js */
 
 /*global define: false, module: false*/
 /*jshint shadow:true, sub:true, forin:true, noarg:true, noempty:true, 
@@ -259,13 +259,27 @@
     this['r'] = r || 0;
   }
   SAT['Circle'] = Circle;
+  
+  // Compute the axis-aligned bounding box (AABB) of this Circle.
+  //
+  // Note: Returns a _new_ `Polygon` each time you call this.
+  /**
+   * @return {Polygon} The AABB
+   */
+  Circle.prototype['getAABB'] = Circle.prototype.getAABB = function() {
+    var r = this['r'];
+    var corner = this["pos"].clone().sub(new Vector(r, r));
+    return new Box(corner, r*2, r*2).toPolygon();
+  };
 
   // ## Polygon
   //
   // Represents a *convex* polygon with any number of points (specified in counter-clockwise order)
   //
-  // Note: If you manually change the `points`, `angle`, or `offset` properties, you **must** call `recalc`
-  // afterwards so that the changes get applied correctly.
+  // Note: Do _not_ manually change the `points`, `angle`, or `offset` properties. Use the
+  // provided setters. Otherwise the calculated properties will not be updated correctly.
+  //
+  // `pos` can be changed directly.
 
   // Create a new polygon, passing in a position vector, and an array of points (represented
   // by vectors relative to the position vector). If no position is passed in, the position
@@ -279,58 +293,69 @@
    */
   function Polygon(pos, points) {
     this['pos'] = pos || new Vector();
-    this['points'] = points || [];
     this['angle'] = 0;
     this['scale'] = new Vector(1, 1);
     this['offset'] = new Vector();
-    this.recalc();
+    this.setPoints(points || []);
   }
   SAT['Polygon'] = Polygon;
   
   // Set the points of the polygon.
   //
-  // Note: This calls `recalc` for you.
+  // Note: The points are counter-clockwise *with respect to the coordinate system*.
+  // If you directly draw the points on a screen that has the origin at the top-left corner
+  // it will _appear_ visually that the points are being specified clockwise. This is just
+  // because of the inversion of the Y-axis when being displayed.
   /**
    * @param {Array.<Vector>=} points An array of vectors representing the points in the polygon,
    *   in counter-clockwise order.
    * @return {Polygon} This for chaining.
    */
   Polygon.prototype['setPoints'] = Polygon.prototype.setPoints = function(points) {
+    // Only re-allocate if this is a new polygon or the number of points has changed.
+    var lengthChanged = !this['points'] || this['points'].length !== points.length;
+    if (lengthChanged) {
+      var i;
+      var calcPoints = this['calcPoints'] = [];
+      var edges = this['edges'] = [];
+      var normals = this['normals'] = [];
+      // Allocate the vector arrays for the calculated properties
+      for (i = 0; i < points.length; i++) {
+        calcPoints.push(new Vector());
+        edges.push(new Vector());
+        normals.push(new Vector());
+      }
+    }
     this['points'] = points;
-    this.recalc();
+    this._recalc();
     return this;
   };
 
   // Set the current rotation angle of the polygon.
-  //
-  // Note: This calls `recalc` for you.
   /**
    * @param {number} angle The current rotation angle (in radians).
    * @return {Polygon} This for chaining.
    */
   Polygon.prototype['setAngle'] = Polygon.prototype.setAngle = function(angle) {
     this['angle'] = angle;
-    this.recalc();
+    this._recalc();
     return this;
   };
 
   // Set the current offset to apply to the `points` before applying the `angle` rotation.
-  //
-  // Note: This calls `recalc` for you.
   /**
    * @param {Vector} offset The new offset vector.
    * @return {Polygon} This for chaining.
    */
   Polygon.prototype['setOffset'] = Polygon.prototype.setOffset = function(offset) {
     this['offset'] = offset;
-    this.recalc();
+    this._recalc();
     return this;
   };
 
   // Rotates this polygon counter-clockwise around the origin of *its local coordinate system* (i.e. `pos`).
   //
-  // Note: This changes the **original** points (so any `angle` will be applied on top of this rotation)
-  // Note: This calls `recalc` for you.
+  // Note: This changes the **original** points (so any `angle` will be applied on top of this rotation).
   /**
    * @param {number} angle The angle to rotate (in radians)
    * @return {Polygon} This for chaining.
@@ -341,7 +366,7 @@
     for (var i = 0; i < len; i++) {
       points[i].rotate(angle);
     }
-    this.recalc();
+    this._recalc();
     return this;
   };
 
@@ -352,7 +377,6 @@
   // the coordinates of `pos`.
   //
   // Note: This changes the **original** points (so any `offset` will be applied on top of this translation)
-  // Note: This calls `recalc` for you.
   /**
    * @param {number} x The horizontal amount to translate.
    * @param {number} y The vertical amount to translate.
@@ -365,40 +389,37 @@
       points[i].x += x;
       points[i].y += y;
     }
-    this.recalc();
+    this._recalc();
     return this;
   };
 
 
   // Computes the calculated collision polygon. Applies the `angle` and `offset` to the original points then recalculates the
   // edges and normals of the collision polygon.
-  //
-  // This **must** be called if the `points` array, `angle`, or `offset` is modified manualy.
   /**
    * @return {Polygon} This for chaining.
    */
-  Polygon.prototype['recalc'] = Polygon.prototype.recalc = function() {
-    var i;
+  Polygon.prototype._recalc = function() {
     // Calculated points - this is what is used for underlying collisions and takes into account
     // the angle/offset set on the polygon.
-    var calcPoints = this['calcPoints'] = [];
+    var calcPoints = this['calcPoints'];
     // The edges here are the direction of the `n`th edge of the polygon, relative to
     // the `n`th point. If you want to draw a given edge from the edge value, you must
     // first translate to the position of the starting point.
-    var edges = this['edges'] = [];
+    var edges = this['edges'];
     // The normals here are the direction of the normal for the `n`th edge of the polygon, relative
     // to the position of the `n`th point. If you want to draw an edge normal, you must first
     // translate to the position of the starting point.
-    var normals = this['normals'] = [];
+    var normals = this['normals'];
     // Copy the original points array and apply the offset/angle
     var points = this['points'];
     var offset = this['offset'];
     var angle = this['angle'];
     var scale = this['scale'];
     var len = points.length;
+    var i;
     for (i = 0; i < len; i++) {
-      var calcPoint = points[i].clone();
-      calcPoints.push(calcPoint);
+      var calcPoint = calcPoints[i].copy(points[i]);
       calcPoint.x += offset.x;
       calcPoint.y += offset.y;
       if (angle !== 0) {
@@ -410,13 +431,45 @@
     for (i = 0; i < len; i++) {
       var p1 = calcPoints[i];
       var p2 = i < len - 1 ? calcPoints[i + 1] : calcPoints[0];
-      var e = new Vector().copy(p2).sub(p1);
-      var n = new Vector().copy(e).perp().normalize();
-      edges.push(e);
-      normals.push(n);
+      var e = edges[i].copy(p2).sub(p1);
+      normals[i].copy(e).perp().normalize();
     }
     return this;
   };
+  
+  
+  // Compute the axis-aligned bounding box. Any current state
+  // (translations/rotations) will be applied before constructing the AABB.
+  //
+  // Note: Returns a _new_ `Polygon` each time you call this.
+  /**
+   * @return {Polygon} The AABB
+   */
+  Polygon.prototype["getAABB"] = Polygon.prototype.getAABB = function() {
+    var points = this["calcPoints"];
+    var len = points.length;
+    var xMin = points[0]["x"];
+    var yMin = points[0]["y"];
+    var xMax = points[0]["x"];
+    var yMax = points[0]["y"];
+    for (var i = 1; i < len; i++) {
+      var point = points[i];
+      if (point["x"] < xMin) {
+        xMin = point["x"];
+      }
+      else if (point["x"] > xMax) {
+        xMax = point["x"];
+      }
+      if (point["y"] < yMin) {
+        yMin = point["y"];
+      }
+      else if (point["y"] > yMax) {
+        yMax = point["y"];
+      }
+    }
+    return new Box(this["pos"].clone().add(new Vector(xMin, yMin)), xMax - xMin, yMax - yMin).toPolygon();
+  };
+  
 
   // ## Box
   //
@@ -427,7 +480,7 @@
   // is given, the position will be `(0,0)`. If no width or height are given, they will
   // be set to `0`.
   /**
-   * @param {Vector=} pos A vector representing the top-left of the box.
+   * @param {Vector=} pos A vector representing the bottom-left of the box (i.e. the smallest x and smallest y value).
    * @param {?number=} w The width of the box.
    * @param {?number=} h The height of the box.
    * @constructor
@@ -672,6 +725,7 @@
     var differenceV = T_VECTORS.pop().copy(p).sub(c['pos']);
     var radiusSq = c['r'] * c['r'];
     var distanceSq = differenceV.len2();
+    T_VECTORS.push(differenceV);
     // If the distance between is smaller than the radius then the point is inside the circle.
     return distanceSq <= radiusSq;
   }
